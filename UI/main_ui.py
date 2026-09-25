@@ -2,8 +2,9 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import colorchooser, filedialog, messagebox, scrolledtext, ttk
 import tkinterweb as tkweb
+from StyleDialog import StyleDialog
 
 
 class Application(tk.Tk):
@@ -15,7 +16,6 @@ class Application(tk.Tk):
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         bottom_margin = 20
-        font = ("Arial", 12)
         color_palette = {
             "background": "#35414d",
             "light_foreground": "#ffffff",
@@ -27,6 +27,7 @@ class Application(tk.Tk):
         # Data Stores
         self.TIMELINE = {}
         self.table_order_to_item_id = {}
+        self._temp_style_data = None  # Temporary storage before clicking "Add Entry"
 
         self.title("Timeline Maker")
         self.geometry(f"{screen_width}x{screen_height}")
@@ -99,9 +100,10 @@ class Application(tk.Tk):
             self.table_view_frame, columns=tree_columns, show="headings"
         )
 
-        self.table_view_tree.bind("<Double-1>", self.load_data_from_table)
+        self.table_view_tree.bind("<<TreeviewSelect>>", self.load_data_from_table)
+        self.table_view_tree.bind("<Double-1>", self.delete_entry)
 
-        self.table_view_tree.heading("order", text="Order")
+        self.table_view_tree.heading("order", text="Order", command=lambda: self.sort_by_column("order", False))
         self.table_view_tree.column("order", width=60, anchor="center")
 
         self.table_view_tree.heading("headline", text="Headline")
@@ -290,6 +292,7 @@ class Application(tk.Tk):
             height=2,
             bg=color_palette["button_bg"],
             fg=color_palette["light_foreground"],
+            command=self.open_style_window,
         )
         self.style_btn.pack(side=tk.TOP, padx=10, pady=(15, bottom_margin))
 
@@ -326,6 +329,23 @@ class Application(tk.Tk):
         # Start non-blocking queue consumer loop on main thread
         self.check_queue()
 
+    def get_default_style(self):
+        """Returns baseline style schema for entries created without opening StyleDialog."""
+        return {
+            "bg_type": "color",
+            "bg_color": "#ffffff",
+            "bg_image_path": "",
+            "media_image_path": "",
+            "caption": "",
+            "source": "",
+            "heading_font": "Arial",
+            "heading_size": 18,
+            "heading_color": "#000000",
+            "body_font": "Arial",
+            "body_size": 12,
+            "body_color": "#333333",
+        }
+
     def add_entry(self):
         headline = self.headline_txtbox.get("1.0", tk.END).strip()
         text_body = self.text_body_txtbox.get("1.0", tk.END).strip()
@@ -348,16 +368,13 @@ class Application(tk.Tk):
 
         # Check date format validation
         try:
-            time.strptime(start_date, "%Y-%m-%d")
-            time.strptime(end_date, "%Y-%m-%d")
+            start_date_obj = time.strptime(start_date, "%Y-%m-%d")
+            end_date_obj = time.strptime(end_date, "%Y-%m-%d")
         except ValueError:
             messagebox.showwarning(
                 "Input Error", "Invalid date format. Please use YYYY-MM-DD."
             )
             return
-
-        start_date_obj = time.strptime(start_date, "%Y-%m-%d")
-        end_date_obj = time.strptime(end_date, "%Y-%m-%d")
 
         start_date_tuple = (
             start_date_obj.tm_year,
@@ -370,15 +387,32 @@ class Application(tk.Tk):
             end_date_obj.tm_mday,
         )
 
-        self.create_data_entry(
-            order, headline, text_body, start_date_tuple, end_date_tuple
+        # Retrieve temp style if configured prior to clicking Add Entry, else generate defaults
+        style_data = (
+            self._temp_style_data
+            if self._temp_style_data
+            else self.get_default_style()
         )
-        self.clear_content()
 
-    def create_data_entry(self, order, headline, text_body, start_date, end_date):
-        data = (headline, text_body, start_date, end_date)
+        self.create_data_entry(
+            order, headline, text_body, start_date_tuple, end_date_tuple, style_data
+        )
+
+        # Reset temp style & fields
+        self.clear_content()
+        self.sort_by_column("order",False)
+        return 1
+    
+
+    def create_data_entry(
+        self, order, headline, text_body, start_date, end_date, style_data=None
+    ):
+        if style_data is None:
+            style_data = self.get_default_style()
+
+        data = (headline, text_body, start_date, end_date, style_data)
         self.TIMELINE[order] = data
-        print(f"Debug: Added entry to TIMELINE: {self.TIMELINE[order]}")
+        print(f"Debug: Stored TIMELINE[{order}]: {self.TIMELINE[order]}")
 
         # Update UI table view
         self.update_table_view(order)
@@ -389,8 +423,14 @@ class Application(tk.Tk):
         self.text_body_txtbox.delete("1.0", tk.END)
         self.start_date_txtbox.delete("1.0", tk.END)
         self.end_date_txtbox.delete("1.0", tk.END)
+
+        # Set spinbox to the next available order number
+        next_order = max(self.TIMELINE.keys(), default=-1) + 1
         self.order_number.delete(0, tk.END)
-        self.order_number.insert(0, "0")
+        self.order_number.insert(0, str(next_order))
+
+        # Clear temporary style
+        self._temp_style_data = None
 
     def update_table_view(self, order):
         print(f"Debug: Updating table view for order {order}")
@@ -421,50 +461,130 @@ class Application(tk.Tk):
             return 0
 
         item_values = self.table_view_tree.item(selected_item[0], "values")
-
-        # Retrieve the order ID from the first column
         order = int(item_values[0])
 
-        
         return self.load_content_fields(order)
 
     def load_content_fields(self, order):
-        # Fetch original data from TIMELINE dictionary
         original_data = self.TIMELINE.get(order)
+        if not original_data:
+            return 0
 
-        
-
-
-        data = self.TIMELINE[order]
         self.order_number.delete(0, tk.END)
-    
         self.headline_txtbox.delete("1.0", tk.END)
         self.text_body_txtbox.delete("1.0", tk.END)
         self.start_date_txtbox.delete("1.0", tk.END)
         self.end_date_txtbox.delete("1.0", tk.END)
 
+        # Parse dates
+        startdate = original_data[2]
+        enddate = original_data[3]
 
-        #parse dates
-
-        startdate = data[2]
-        enddate = data[3]
-
-        startdate = f"{startdate[0]}-{startdate[1]}-{startdate[2]}"
-        enddate = f"{enddate[0]}-{enddate[1]}-{enddate[2]}"
-
+        start_str = f"{startdate[0]}-{startdate[1]:02d}-{startdate[2]:02d}"
+        end_str = f"{enddate[0]}-{enddate[1]:02d}-{enddate[2]:02d}"
 
         self.order_number.insert(0, order)
-        self.headline_txtbox.insert("1.0", data[0])
-        self.text_body_txtbox.insert("1.0",data[1])
-        self.start_date_txtbox.insert("1.0",startdate)
-        self.end_date_txtbox.insert("1.0",enddate)
+        self.headline_txtbox.insert("1.0", original_data[0])
+        self.text_body_txtbox.insert("1.0", original_data[1])
+        self.start_date_txtbox.insert("1.0", start_str)
+        self.end_date_txtbox.insert("1.0", end_str)
+
+        # Populate temporary style with target entry's style configuration
+        if len(original_data) > 4 and original_data[4]:
+            self._temp_style_data = original_data[4].copy()
+        else:
+            self._temp_style_data = self.get_default_style()
 
         print(
-                    f"Debug: Data loaded from table, order: {order}, data: {original_data}"
-                )
+            f"Debug: Loaded Order {order} and attached style_data."
+        )
 
-        
         return 1
+
+    def delete_entry(self,event):
+        selected_item = self.table_view_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("Selection Error", "Please select an item to delete.")
+            return 0
+        item_values = self.table_view_tree.item(selected_item[0], "values")
+        order = int(item_values[0])
+        headline = item_values[1]
+
+        confirm = messagebox.askyesno(
+        title="Confirm Deletion",
+        message=f"Are you sure you want to delete Order {order} ('{headline}')?\nThis action cannot be undone.",
+        icon="warning",  # Displays the warning icon on Windows/macOS/Linux
+        )
+
+        if confirm:
+            # Remove from dictionary
+            if order in self.TIMELINE:
+                del self.TIMELINE[order]
+
+            # Remove from ID mapping
+            if order in self.table_order_to_item_id:
+                del self.table_order_to_item_id[order]
+
+            # Remove row from Treeview widget
+            self.table_view_tree.delete(selected_item[0])
+
+            # Reset editor fields
+            self.clear_content()
+
+        print(f"Debug: Successfully deleted Order {order}")
+        self.sort_by_column("order",False)
+        return 1
+
+
+
+
+    def open_style_window(self):
+        try:
+            current_order = int(self.order_number.get())
+        except ValueError:
+            current_order = 0
+
+        # If it's a new entry, ensure _temp_style_data is set to fresh defaults
+        if current_order not in self.TIMELINE and self._temp_style_data is None:
+            self._temp_style_data = self.get_default_style()
+
+        dialog = StyleDialog(self, current_order=current_order)
+        self.wait_window(dialog)
+
+        print(f"Debug: Finished editing style for Order {current_order}")
+
+
+
+    def sort_by_column(self, col, reverse):
+        """Sort treeview content when a column header is clicked."""
+        # Fetch list of tuples: [(col_value, item_id), ...]
+        data = []
+        for item_id in self.table_view_tree.get_children(""):
+            value = self.table_view_tree.set(item_id, col)
+
+            # Convert to integer if sorting by 'order' so numeric sorting works correctly
+            if col == "order":
+                try:
+                    value = int(value)
+                except ValueError:
+                    pass
+
+            data.append((value, item_id))
+
+        # Sort the list based on column value
+        data.sort(reverse=reverse)
+
+        # Reorder items in the Treeview
+        for index, (val, item_id) in enumerate(data):
+            self.table_view_tree.move(item_id, "", index)
+
+        # Rebind header click to reverse direction on next click
+        self.table_view_tree.heading(
+            col, command=lambda: self.sort_by_column(col, not reverse)
+        )
+
+
+
 
     def start_task(self):
         worker = threading.Thread(target=self.background_worker, daemon=True)
@@ -488,6 +608,9 @@ class Application(tk.Tk):
     def on_close(self):
         self.is_running = False
         self.destroy()
+
+
+
 
 
 if __name__ == "__main__":
